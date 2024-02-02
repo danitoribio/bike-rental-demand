@@ -1,0 +1,438 @@
+---
+title: "Case Study"
+output:
+  html_document: 
+    css: my-theme.css
+    theme: cerulean
+    highlight: tango
+    number_sections: no
+    toc: no
+    toc_depth: 1
+  pdf_document:
+    css: my-theme.css
+    theme: cerulean
+    highlight: tango
+    number_sections: yes
+    toc: yes
+    toc_depth: 1
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r global_options, include=T, echo = F}
+knitr::opts_chunk$set(echo = T, warning=FALSE, message=FALSE)
+```
+## Bike rental demand
+
+### Dataset
+
+This data set has been obtained from https://www.kaggle.com/competitions/bike-sharing-demand/data?select=train.csv.
+The data is about the rent of bikes per hour during two years. All the information related with the variables is in the link provided before.
+```{r}
+rm(list=ls())
+setwd("C:/Users/dtori/OneDrive/Escritorio/UC3M/Bayesian/Case study")
+data = read.csv("bikes.csv")
+attach(data)
+```
+
+Our goals are:
+  - Obtaining a posterior distribution for the number of total rentals.
+  - Be able to predict the number of bike rentals.
+
+### Exploratory data analysis 
+
+Firstly we need to perform and EDA to understand the data we are working with. 
+
+```{r}
+summary(data)
+```
+
+We can see some variables should be converted to factors. These variables are season, holiday,workingday and weather. In addition this data set does not have missing values.
+```{r}
+data$season = as.factor(season)
+data$holiday = as.factor(holiday)
+data$workingday = as.factor(workingday)
+data$weather = as.factor(weather)
+```
+
+We also have to deal with the datetime variable as it is providing the day and the hour of the number of rentals, but the day only provides us information that is given by the holiday and workingday variables. This means that the only useful information about datetime variable is the hour. We will create a new variable with the hour.
+
+```{r}
+
+hour=format(as.POSIXct(data$datetime), format = "%H")
+data$datetime=as.factor(hour)
+```
+
+
+Now we have to check if there are outliers, and if we have, we will remove them.
+```{r}
+boxplot(data$count)
+
+```
+```{r}
+quantiles = quantile(data$count, probs=c(.25, .75))
+IQR = IQR(data$count)
+ 
+Lower = quantiles[1] - 1.5*IQR
+Upper = quantiles[2] + 1.5*IQR 
+ 
+data = subset(data, data$count > Lower & data$count < Upper)
+```
+
+
+
+### Posterior distribution for the number of total rentals
+
+
+```{r}
+summary(data$count)
+hist(data$count)
+```
+
+We can see that count variable is skewed right and as we have the number of bike rentals per hour a Poisson distribution can be assumed.
+
+$$  P(X = k) = \frac{e^{-\lambda}\lambda^k}{k!} $$
+As we have assumed a Poisson distribution we can use a gamma distribution as a conjugate prior.
+$$\lambda \sim \text{Gamma}(a,b)$$
+The likelihood of a poisson distribution is:
+$$f(data|\lambda) \propto \lambda^{\sum_{i=1}^n x_i} e^{-n\lambda}$$
+Applying the Bayes theorem we obtain the posterior distribution for λ.
+$$λ|data ∼ Gamma(a +\sum_{i=1}^n x_i, b + n).$$
+We do not have expert's opinion so we can assume non informative prior.
+```{r}
+a=0.01
+b=0.01
+post.a=a+sum(data$count)
+post.b=b+nrow(data)
+x=seq(174,177,0.01)
+plot(x,dgamma(x,post.a,post.b))
+```
+
+The posterior mean:
+```{r}
+(post.a + sum(data$count)) / (post.b + nrow(data))
+```
+
+95% credible interval for the mean expected number of rentals per hour:
+```{r}
+ c(qgamma(0.025,post.a,post.b),qgamma(0.975,post.a,post.b))
+```
+
+We can also obtain the predictive distribution:
+$$\Pr(X=x|data) = {\int_0^\infty \Pr(X=x|\lambda) \Pr(\lambda|data) \, d\lambda}$$
+After computations we obtain:
+
+$$\Pr(X=x|data) = \frac{(b+n)^{a +\sum_{i=1}^n x_i}}{x!\Gamma(a +\sum_{i=1}^n x_i)} \frac{\Gamma(a +x+\sum_{i=1}^n x_i)}{(b+n+1)^{a +x+\sum_{i=1}^n x_i}} $$
+
+With this we are able to predict the probability of the number of rentals for the next hour, but in practice as the sum of count variable is very large we obtain an indetermination so we need to use another approach to be able to predict the number of bike rentals per hour.
+
+We can apply Monte Carlo to obtain a sample of the predictive distribution for the next hour.
+
+```{r}
+numSim=10000 
+predictedRentals = NULL
+for (i in 1:numSim) {
+  lambdaMC=rgamma(1,post.a,post.b) 
+  predictedRentals[i]=rpois(1,lambdaMC) 
+  } 
+plot(table(predictedRentals)/numSim)
+mean(predictedRentals)
+```
+
+We can obtain a 95% confidence interval for our prediction.
+```{r}
+c(quantile(predictedRentals,0.025),quantile(predictedRentals,0.975))
+```
+
+
+As the response variable follows a Poisson distribution and we have covariates of the number of rentals, we can also implement Bayesian Poisson regression.
+
+### Bayesian Poisson regression
+
+We can make some plots that will be useful to see what are the covariates that are more correlated with count.
+```{r}
+library(corrplot)
+corrplot(cor(data[,6:12]), method = 'number')
+pairs(data[,6:12])
+```
+We can see that registered and casual have strong positive correlation with count.
+
+```{r}
+attach(data)
+boxplot(count~datetime)
+boxplot(count~season)
+boxplot(count~weather)
+```
+```{r}
+library(ggplot2)
+ggplot(data = data) + geom_histogram(aes(x=count,fill=factor(holiday)),bins=10, position = "dodge",alpha = 0.5)
+ggplot(data = data) + geom_histogram(aes(x=count,fill=factor(workingday)),bins=10, position = "dodge",alpha = 0.5)
+```
+
+
+We can see that these variables also affect the number of rentals.
+
+Our model is going to use datetime, season, workingday, holiday, weather, registered and casual to predict the number of rentals. 
+
+For the poisson regression we will use the package MCMCpack.
+
+For the poisson regression:
+$$Y \mid \lambda \sim \text{Poisson}(\lambda)$$
+$$\log \lambda = \beta_0 + \sum_{j=1}^k \beta_j x_j$$
+First we fit a Bayesian Poisson regression model.
+```{r}
+library(MCMCpack)
+poisson.mcmc = MCMCpoisson(count ~ datetime + season + workingday + holiday + weather + registered + casual,burnin=100, mcmc=1000, data=data)
+summary(poisson.mcmc)
+```
+
+We can see that casual, registered and weather2 have very small coefficients. We can also see that due to the variable datetime we have created a lot of dummy variables. One possible solution could be grouping the hours in morning, afternoon, evening and night
+
+```{r}
+transformHour = function(x){
+  if((x>=6)&&(x<=12)){
+    x="Morning"
+  }
+  if((x>12)&&(x<=17)){
+    x="Afternoon"
+  }
+  if((x>17)&&(x<=21)){
+    x="Evening"
+  }
+  if(x<6){
+    x="Night"
+  }
+  if(x==22){
+    x="Night"
+  }
+  if(x==23){
+    x="Night"
+  }
+  if(x==24){
+    x="Night"
+  }
+  return(x)
+}
+data$datetime=sapply(as.numeric(data$datetime), transformHour)
+data$datetime=as.factor(data$datetime)
+boxplot(data$count~data$datetime)
+```
+
+```{r}
+attach(data)
+poisson.mcmc = MCMCpoisson(count ~ datetime + season + workingday + holiday + weather + registered + casual,burnin=100, mcmc=1000, data=data)
+summary(poisson.mcmc)
+```
+Now we have less dummy variables so we decrease the number of coefficients.
+We have to check the e convergence of the mcmc chain.
+
+```{r}
+acf(poisson.mcmc[,1])
+acf(poisson.mcmc[,2])
+acf(poisson.mcmc[,3])
+acf(poisson.mcmc[,4])
+acf(poisson.mcmc[,5])
+acf(poisson.mcmc[,6])
+acf(poisson.mcmc[,7])
+acf(poisson.mcmc[,8])
+acf(poisson.mcmc[,9])
+acf(poisson.mcmc[,10])
+acf(poisson.mcmc[,11])
+acf(poisson.mcmc[,12])
+acf(poisson.mcmc[,13])
+acf(poisson.mcmc[,14])
+```
+
+According to the graphs we need to incorporate some thinning in the algorithm.
+
+```{r}
+poisson.mcmc = MCMCpoisson(count ~ datetime + season + workingday + weather + registered + casual + holiday,burnin=1000, mcmc=10000, ,thin = 50, data=data)
+summary(poisson.mcmc)
+```
+
+We can see that the quantile of weather2 and holiday1 contains 0
+```{r}
+acf(poisson.mcmc[,1])
+acf(poisson.mcmc[,2])
+acf(poisson.mcmc[,3])
+acf(poisson.mcmc[,4])
+acf(poisson.mcmc[,5])
+acf(poisson.mcmc[,6])
+acf(poisson.mcmc[,7])
+acf(poisson.mcmc[,8])
+acf(poisson.mcmc[,9])
+acf(poisson.mcmc[,10])
+acf(poisson.mcmc[,11])
+acf(poisson.mcmc[,12])
+acf(poisson.mcmc[,13])
+```
+
+Now our Bayesian Poisson regression model looks correct so we can use it now to obtain the predictive distribution of the number of total rentals given the used variables.
+For example, what is the predictive distribution for the number of rentals given that we are in the morning of a working Fall day,the weather is misty, and registered=7 and casual=5
+```{r}
+rentals=exp(poisson.mcmc[,1]+poisson.mcmc[,3]+poisson.mcmc[,6]+poisson.mcmc[,8]+poisson.mcmc[,9]+7*poisson.mcmc[,12]+5*poisson.mcmc[,13])
+hist(rentals,freq=F)
+mean(rentals)
+quantile(rentals,c(0.025,0.975))
+rental_pred = rpois(length(rentals),rentals)
+quantile(rental_pred,c(0.025,0.975))
+plot(table(rental_pred))
+
+```
+
+We can also try to build our model with OpenBugs package and compare it with the one obtained with MCMCpack.
+
+```{r}
+library(R2OpenBUGS)
+pois.bayes <- function(){
+  for( i in 1 : n ) {
+    rentals[i] ~ dpois(lambda[i])
+    log(lambda[i]) <- b0 + b1 * datetimeEvening[i] + b2*datetimeMorning[i] + b3*datetimeNight[i] + b4*season2[i] + b5*season3[i] + b6*season4[i] + b7*workingday1[i] + b8*weather2[i] + b9*weather3[i] + b10*weather4[i] + b11*registered[i] + b12*casual[i] + 
+b13*holiday1[i]
+  }
+  b0 ~ dnorm(0.0, 1.0E-6)
+  b1 ~ dnorm(0.0, 1.0E-6)
+  b2 ~ dnorm(0.0, 1.0E-6)
+  b3 ~ dnorm(0.0, 1.0E-6)
+  b4 ~ dnorm(0.0, 1.0E-6)
+  b5 ~ dnorm(0.0, 1.0E-6)
+  b6 ~ dnorm(0.0, 1.0E-6)
+  b7 ~ dnorm(0.0, 1.0E-6)
+  b8 ~ dnorm(0.0, 1.0E-6)
+  b9 ~ dnorm(0.0, 1.0E-6)
+  b10 ~ dnorm(0.0, 1.0E-6)
+  b11 ~ dnorm(0.0, 1.0E-6)
+  b12 ~ dnorm(0.0, 1.0E-6)
+  b13 ~ dnorm(0.0, 1.0E-6)
+ 
+}
+n=length(data$count)
+datetimeEvening = ifelse(data$datetime=="Evening",1,0)
+datetimeMorning = ifelse(data$datetime=="Morning",1,0)
+datetimeNight = ifelse(data$datetime=="Night",1,0)
+season2 = ifelse(data$season=="2",1,0)
+season3 = ifelse(data$season=="3",1,0)
+season4 = ifelse(data$season=="4",1,0)
+workingday1 = ifelse(data$workingday=="1",1,0)
+weather2 = ifelse(data$weather=="2",1,0)
+weather3 = ifelse(data$weather=="3",1,0)
+weather4 = ifelse(data$weather=="4",1,0)
+holiday1 = ifelse(data$holiday=="1",1,0)
+Data <- list(n=n, rentals=data$count, datetimeEvening = datetimeEvening, 
+             datetimeMorning = datetimeMorning, datetimeNight = datetimeNight, 
+             season2 = season2, season3 = season3, season4 = season4,
+             workingday1 = workingday1, weather2 = weather2, weather3 = weather3,
+             weather4 = weather4, registered = data$registered, casual = data$casual,
+             holiday1=as.numeric(data$holiday))
+inits <- function(){
+  list(b0 = 1, b1 = 0, b2 = 0, b3 = 0, b4 = 1, b5 = 0, b6 = 0, b7 = 0, b8 = 1, b9 = 0, b10 = 0, b11 = 0, b12 = 0, b13 = 0)
+}
+output <- bugs(data = Data, inits = inits, parameters.to.save = c("b0", "b1", "b2","b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10", "b11", "b12","b13"), model.file = pois.bayes, n.chains = 1, n.burnin=100, n.iter = 1000)
+output
+```
+
+We can see that using OpenBugs we apparently obtain some coefficients equal to 0, but we have to check it because the summary of OpenBugs rounds the coefficients to one decimal.
+
+```{r}
+b0.post <-output$sims.list$b0
+b1.post <-output$sims.list$b1
+b2.post <-output$sims.list$b2
+b3.post <-output$sims.list$b3
+b4.post <-output$sims.list$b4
+b5.post <-output$sims.list$b5
+b6.post <-output$sims.list$b6
+b7.post <-output$sims.list$b7
+b8.post <-output$sims.list$b8
+b9.post <-output$sims.list$b9
+b10.post <-output$sims.list$b10
+b11.post <-output$sims.list$b11
+b12.post <-output$sims.list$b12
+ts.plot(b0.post)
+acf(b0.post)
+ts.plot(b1.post)
+acf(b1.post)
+ts.plot(b2.post)
+acf(b2.post)
+ts.plot(b3.post)
+acf(b3.post)
+pred.lambda=exp(b0.post+b2.post+b5.post+b7.post+b8.post+7*b11.post+5*b12.post)
+hist(pred.lambda)
+mean(pred.lambda)
+quantile(pred.lambda,c(0.025,0.975))
+pred.rentals =rpois(length(pred.lambda),pred.lambda)
+quantile(pred.rentals,c(0.025,0.975))
+plot(table(pred.rentals))
+```
+
+```{r}
+c(mean(rental_pred),mean(pred.rentals))
+```
+
+We obtain almost the same results but we can build another model without weather2 and holiday1 because the zero was contained in its coefficient credible interval.
+
+```{r}
+pois.bayes <- function(){
+  for( i in 1 : n ) {
+    rentals[i] ~ dpois(lambda[i])
+    log(lambda[i]) <- b0 + b1 * datetimeEvening[i] + b2*datetimeMorning[i] + b3*datetimeNight[i] + b4*season2[i] + b5*season3[i] + b6*season4[i] + b7*workingday1[i]  + b8*weather3[i] + b9*weather4[i] + b10*registered[i] + b11*casual[i]
+  }
+  b0 ~ dnorm(0.0, 1.0E-6)
+  b1 ~ dnorm(0.0, 1.0E-6)
+  b2 ~ dnorm(0.0, 1.0E-6)
+  b3 ~ dnorm(0.0, 1.0E-6)
+  b4 ~ dnorm(0.0, 1.0E-6)
+  b5 ~ dnorm(0.0, 1.0E-6)
+  b6 ~ dnorm(0.0, 1.0E-6)
+  b7 ~ dnorm(0.0, 1.0E-6)
+  b8 ~ dnorm(0.0, 1.0E-6)
+  b9 ~ dnorm(0.0, 1.0E-6)
+  b10 ~ dnorm(0.0, 1.0E-6)
+  b11 ~ dnorm(0.0, 1.0E-6)
+ 
+}
+n=length(data$count)
+datetimeEvening = ifelse(data$datetime=="Evening",1,0)
+datetimeMorning = ifelse(data$datetime=="Morning",1,0)
+datetimeNight = ifelse(data$datetime=="Night",1,0)
+season2 = ifelse(data$season=="2",1,0)
+season3 = ifelse(data$season=="3",1,0)
+season4 = ifelse(data$season=="4",1,0)
+workingday1 = ifelse(data$workingday=="1",1,0)
+weather3 = ifelse(data$weather=="3",1,0)
+weather4 = ifelse(data$weather=="4",1,0)
+Data <- list(n=n, rentals=data$count, datetimeEvening = datetimeEvening, 
+             datetimeMorning = datetimeMorning, datetimeNight = datetimeNight, 
+             season2 = season2, season3 = season3, season4 = season4,
+             workingday1 = workingday1, weather3 = weather3,
+             weather4 = weather4, registered = data$registered, casual = data$casual)
+inits <- function(){
+  list(b0 = 1, b1 = 0, b2 = 0, b3 = 0, b4 = 1, b5 = 0, b6 = 0, b7 = 0, b8 = 1, b9 = 0, b10 = 0, b11 = 0)
+}
+output2 <- bugs(data = Data, inits = inits, parameters.to.save = c("b0", "b1", "b2","b3", "b4", "b5", "b6", "b7", "b8", "b9", "b10", "b11"), model.file = pois.bayes, n.chains = 1, n.burnin=100, n.iter = 1000)
+output2
+```
+
+```{r}
+pred.lambda2=exp(b0.post+b2.post+b5.post+b7.post+7*b10.post+5*b11.post)
+pred.rentals2 =rpois(length(pred.lambda),pred.lambda)
+quantile(pred.rentals2,c(0.025,0.975))
+c(mean(rental_pred),mean(pred.rentals),mean(pred.rentals2))
+```
+
+We obtain almost the same results.
+
+We can compare the models built woth OpenBugs using the DIC
+
+```{r}
+c(output$DIC,output2$DIC)
+```
+
+We obtain lower DIC for the second model without weather2 and holiday1. This means that our final model is going to be the second one.
+
+
+### Conclusion
+
+We can see that when we use Bayesian Poisson regression our predictive confidence interval are narrower than when we just use Monte Carlo to approximate the predictive distribution. Also we can see that removing some variables, for example, holiday and weather2, reduces the DIC of the Poisson regression model.
+
+In conclusion, Bayesian prediction provides us with a prediction distribution while the frequentist approach only gives us a point estimation.
